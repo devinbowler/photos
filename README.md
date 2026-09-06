@@ -34,6 +34,12 @@ another album or deleted together. Album order is stored per photo, so
 photos uploaded before ordering existed get positions the first time their
 album is opened, based on the date order they were already in.
 
+A photo can be downloaded from its full-size view, and selected photos can be
+downloaded together from Edit mode, which comes back as one zip. Downloads are
+always jpeg at native resolution and maximum quality, so a HEIC original comes
+back as something any machine can open. Cloudinary builds the zip, so nothing
+large is streamed through the backend.
+
 Cloudinary stores the uploaded file untouched, so the originals are never
 degraded. The full-size view is served at native resolution with quality set
 to maximum, which is a re-encode but not a visible one; `f_auto` stays in the

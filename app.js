@@ -31,6 +31,7 @@ const el = {
   lbSaveCaption: document.getElementById('lbSaveCaption'),
   lbDelete: document.getElementById('lbDelete'),
   lbClose: document.getElementById('lbClose'),
+  lbDownload: document.getElementById('lbDownload'),
   lbPrev: document.getElementById('lbPrev'),
   lbNext: document.getElementById('lbNext'),
   modal: document.getElementById('modal'),
@@ -678,6 +679,18 @@ function warmOnHover(tile) {
   preload(photo.full);
 }
 
+
+// The download URLs carry Content-Disposition from Cloudinary, so a plain
+// link is enough and nothing has to be proxied through the backend.
+function saveFile(url) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 /* ------------------------------------------------------------------ *
  * Lightbox
  * ------------------------------------------------------------------ */
@@ -753,6 +766,13 @@ el.lightbox.addEventListener('click', e => {
   if (e.target.dataset.close) closeLightbox();
 });
 el.lbClose.addEventListener('click', closeLightbox);
+
+el.lbDownload.addEventListener('click', () => {
+  const photo = state.photos[state.lightboxIndex];
+  if (!photo) return;
+  saveFile(photo.download || photo.original);
+  toast('Downloading full resolution JPEG');
+});
 el.lbPrev.addEventListener('click', () => step(-1));
 el.lbNext.addEventListener('click', () => step(1));
 
@@ -931,6 +951,7 @@ function selectBarHTML() {
     <div class="select-bar" id="selectBar" hidden>
       <span class="count">0 selected</span>
       <span class="spacer"></span>
+      <button type="button" id="selectDownload">Download</button>
       <button type="button" id="selectPublic">Make public</button>
       <button type="button" id="selectPrivate">Make private</button>
       <button type="button" id="selectMove">Move to album</button>
@@ -959,8 +980,30 @@ async function setSelectedVisibility(makePublic) {
   }
 }
 
+async function downloadSelected() {
+  const ids = selectedIds();
+  const button = document.getElementById('selectDownload');
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Preparing...';
+  try {
+    const data = await api('/api/photos/download', { method: 'POST', json: { ids } });
+    saveFile(data.url);
+    toast(data.zip
+      ? `Downloading ${data.count} photos as a zip`
+      : 'Downloading full resolution JPEG');
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
 function wireSelectBar() {
   const move = document.getElementById('selectMove');
+  const dl = document.getElementById('selectDownload');
+  if (dl) dl.addEventListener('click', downloadSelected);
   const pub = document.getElementById('selectPublic');
   const priv = document.getElementById('selectPrivate');
   if (pub) pub.addEventListener('click', () => setSelectedVisibility(true));

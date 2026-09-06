@@ -137,6 +137,13 @@ function derive(url, transform) {
   return url.replace('/upload/', `/upload/${transform}/`);
 }
 
+// Cloudinary picks the delivered format from the file extension, so forcing
+// .jpg converts a HEIC original into something universally openable.
+// fl_attachment makes the browser save it rather than display it.
+function jpegDownload(url) {
+  return derive(url, 'q_100,fl_attachment').replace(/\.[^./?]+$/, '.jpg');
+}
+
 function serializePhoto(photo) {
   return {
     id: photo._id,
@@ -160,7 +167,9 @@ function serializePhoto(photo) {
     // Full size is native resolution at maximum quality: no downscale and no
     // visible loss. f_auto is still needed so HEIC renders in a browser at all.
     full: derive(photo.url, 'q_auto:best,f_auto'),
-    original: photo.url
+    original: photo.url,
+    // Native resolution, maximum quality, always a jpeg
+    download: jpegDownload(photo.url)
   };
 }
 
@@ -564,6 +573,34 @@ app.post('/api/photos', requireOwner, upload.array('files', 8), async (req, res)
   }
 });
 
+
+// A zip of several photos, converted to jpeg at full resolution
+app.post('/api/photos/download', requireOwner, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'No photos selected' });
+    if (ids.length > 200) return res.status(400).json({ error: 'Too many photos for one zip, keep it under 200' });
+
+    const photos = await Photo.find({ _id: { $in: ids } });
+    if (!photos.length) return res.status(404).json({ error: 'Those photos no longer exist' });
+
+    if (photos.length === 1) {
+      return res.json({ url: jpegDownload(photos[0].url), zip: false, count: 1 });
+    }
+
+    const url = cloudinary.utils.download_zip_url({
+      public_ids: photos.map(p => p.publicId),
+      resource_type: 'image',
+      flatten_folders: true,
+      transformations: [{ quality: 100, fetch_format: 'jpg' }]
+    });
+
+    res.json({ url, zip: true, count: photos.length });
+  } catch (err) {
+    console.error('Download error:', err);
+    res.status(500).json({ error: 'Could not prepare that download' });
+  }
+});
 
 // Save a hand-dragged order for the public gallery
 app.patch('/api/gallery/order', requireOwner, async (req, res) => {

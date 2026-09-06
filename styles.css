@@ -455,7 +455,17 @@ img { display: block; max-width: 100%; }
 .btn-quiet.danger { color: #ff9d7a; }
 
 /* Close and navigation */
-.lightbox-close,
+.lightbox-tools {
+  position: absolute;
+  top: 20px;
+  right: 22px;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+}
+.lightbox-tool { width: 38px; height: 38px; }
+
+.lightbox-tool,
 .lightbox-nav {
   z-index: 2;
   color: #fff;
@@ -468,8 +478,7 @@ img { display: block; max-width: 100%; }
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
-.lightbox-close:hover, .lightbox-nav:hover { background: rgba(255,255,255,.28); }
-.lightbox-close { position: absolute; top: 20px; right: 22px; width: 38px; height: 38px; }
+.lightbox-tool:hover, .lightbox-nav:hover { background: rgba(255,255,255,.28); }
 
 .lightbox-nav-group {
   position: absolute;
@@ -508,7 +517,7 @@ img { display: block; max-width: 100%; }
     justify-content: center;
     gap: 16px;
   }
-  .lightbox-close { top: 14px; right: 14px; }
+  .lightbox-tools { top: 14px; right: 14px; }
 }
 
 /* ---------- Modal ---------- */

@@ -58,9 +58,14 @@
   <!-- Lightbox -->
   <div class="lightbox" id="lightbox" hidden>
     <div class="lightbox-scrim" data-close="1"></div>
-    <button class="lightbox-close" id="lbClose" type="button" aria-label="Close">
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-    </button>
+    <div class="lightbox-tools">
+      <button class="lightbox-tool" id="lbDownload" type="button" aria-label="Download full resolution JPEG" title="Download full resolution JPEG">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 19h16"/></svg>
+      </button>
+      <button class="lightbox-tool" id="lbClose" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
 
     <div class="lightbox-stage">
       <div class="lightbox-main">
