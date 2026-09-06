@@ -214,8 +214,13 @@ function throttle(req, res, next) {
 const upload = multer({
   storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
-    if (/^image\//.test(file.mimetype)) cb(null, true);
-    else cb(new Error('Only image files are allowed'), false);
+    // Some browsers send an empty or generic type for .heic, so allow a known
+    // image extension through rather than rejecting the upload outright.
+    const byMime = /^image\//.test(file.mimetype || '');
+    const generic = !file.mimetype || file.mimetype === 'application/octet-stream';
+    const byName = /\.(jpe?g|png|gif|webp|avif|heic|heif|bmp|tiff?)$/i.test(file.originalname || '');
+    if (byMime || (generic && byName)) cb(null, true);
+    else cb(new Error(`${file.originalname} is not an image file`), false);
   },
   limits: { fileSize: 25 * 1024 * 1024, files: 25 }
 });

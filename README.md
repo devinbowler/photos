@@ -2,7 +2,7 @@
 
 Photo hosting for devinbowler.com/photos. Anyone can look, only I can upload.
 
-- `index.html`, `styles.css`, `app.js`, `config.js` — the static frontend, deployed on Netlify
+- `index.html`, `styles.css`, `app.js`, `config.js` — the static frontend, served by GitHub Pages
 - `backend/` — Express API deployed on Render
 
 ## How the access works
@@ -34,8 +34,9 @@ Root directory on Render is `backend`, build is `npm install`, start is `npm sta
 
 ## Frontend
 
-Set `API_URL` in `config.js` to the Render URL, then deploy the repo root to
-Netlify. No build step.
+GitHub Pages serves this repo's root on the `main` branch, which lands at
+devinbowler.com/photos because the devinbowler.github.io repo claims that
+domain. No build step. `API_URL` in `config.js` points at the Render service.
 
 ## Running locally
 

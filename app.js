@@ -44,6 +44,15 @@ function esc(str) {
   ));
 }
 
+const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|avif|heic|heif|bmp|tiff?)$/i;
+
+// Windows Chrome reports .heic with an empty MIME type, so check the filename too
+function isImage(file) {
+  if (file.type && file.type.startsWith('image/')) return true;
+  if (!file.type || file.type === 'application/octet-stream') return IMAGE_EXTENSIONS.test(file.name);
+  return false;
+}
+
 let toastTimer = null;
 function toast(message) {
   el.toast.textContent = message;
@@ -188,6 +197,11 @@ el.modal.addEventListener('click', e => {
   if (e.target.dataset.close) closeModal();
 });
 
+function clearModalError() {
+  const node = el.modalCard.querySelector('.modal-error');
+  if (node) node.remove();
+}
+
 function modalError(message) {
   let node = el.modalCard.querySelector('.modal-error');
   if (!node) {
@@ -259,7 +273,7 @@ function openUploadModal(presetAlbum) {
       <strong>Choose photos</strong>
       or drag them here
     </div>
-    <input type="file" id="fileInput" accept="image/*" multiple hidden>
+    <input type="file" id="fileInput" accept="image/*,.heic,.heif,.HEIC,.HEIF,.avif,.AVIF" multiple hidden>
     <div class="file-list" id="fileList"></div>
 
     <div class="field">
@@ -291,10 +305,23 @@ function openUploadModal(presetAlbum) {
   let files = [];
 
   function setFiles(list) {
-    files = Array.from(list).filter(f => f.type.startsWith('image/')).slice(0, 25);
+    const all = Array.from(list);
+    const picked = all.filter(isImage);
+    const skipped = all.filter(f => !isImage(f));
+
+    files = picked.slice(0, 25);
+    const overflow = picked.length - files.length;
+
     fileList.innerHTML = files
       .map(f => `<div>${esc(f.name)} <span style="color:var(--text-muted)">${(f.size / 1024 / 1024).toFixed(1)} MB</span></div>`)
       .join('');
+
+    const notes = [];
+    if (skipped.length) notes.push(`${skipped.length} file${skipped.length === 1 ? '' : 's'} skipped, not an image`);
+    if (overflow) notes.push(`${overflow} over the 25 file limit`);
+    if (notes.length) modalError(notes.join(' \u00b7 '));
+    else clearModalError();
+
     submit.disabled = files.length === 0;
     submit.textContent = files.length ? `Upload ${files.length}` : 'Upload';
   }
