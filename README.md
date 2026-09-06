@@ -12,6 +12,31 @@ a token that is good for 30 minutes, kept in sessionStorage. While that token is
 alive I can upload, write captions, and create or delete albums. When it expires
 the page goes back to being read-only.
 
+Photos are not added to the public gallery unless I tick the box at upload
+time, and any single photo can be added or removed from the gallery later
+from its full-size view without affecting which album it sits in.
+
+Uploads go up in batches of four. The server holds each batch in memory
+before sending it on to Cloudinary, so batching keeps peak memory flat no
+matter how many photos are selected, and a failed batch reports itself and
+offers a retry of just those files rather than losing the whole run.
+
+Inside an album, Edit turns on reordering and selection. Dragging a photo
+moves it and the new order is saved to the album straight away; a click
+without movement selects instead, and selected photos can be moved to
+another album or deleted together. Album order is stored per photo, so
+photos uploaded before ordering existed get positions the first time their
+album is opened, based on the date order they were already in.
+
+Opening a photo does not wait on a download. Every photo in the current view
+has a mid-size preview fetched quietly in the background, so the lightbox
+always has something correct to paint immediately, and the full size for the
+photos either side is fetched ahead of the arrow keys. Selected photos can
+also be made public or private in bulk.
+
+Only photos that are in the public gallery carry a badge, and only inside
+an album, since everything in the gallery is public by definition.
+
 Albums are public or private. A private album has its own separate password,
 shared with whoever should see it, and unlocking one gives a signed token good
 for 12 hours. Photos in a private album are never included in the public gallery

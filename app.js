@@ -9,7 +9,9 @@ const state = {
   owner: null,           // { token, expiresAt }
   photos: [],
   albums: [],
-  lightboxIndex: -1
+  lightboxIndex: -1,
+  editing: false,
+  selected: new Set()
 };
 
 const el = {
@@ -24,6 +26,7 @@ const el = {
   lbMeta: document.getElementById('lbMeta'),
   lbOwnerTools: document.getElementById('lbOwnerTools'),
   lbCaptionInput: document.getElementById('lbCaptionInput'),
+  lbInGallery: document.getElementById('lbInGallery'),
   lbSaveCaption: document.getElementById('lbSaveCaption'),
   lbDelete: document.getElementById('lbDelete'),
   lbClose: document.getElementById('lbClose'),
@@ -267,7 +270,7 @@ function openUploadModal(presetAlbum) {
 
   openModal(`
     <h2>Upload photos</h2>
-    <p class="modal-sub">JPEG, PNG, HEIC or WebP. Up to 25 at a time.</p>
+    <p class="modal-sub">JPEG, PNG, HEIC, WebP. Select as many as you like.</p>
 
     <div class="dropzone" id="dropzone">
       <strong>Choose photos</strong>
@@ -285,10 +288,10 @@ function openUploadModal(presetAlbum) {
     </div>
 
     <label class="checkline">
-      <input type="checkbox" id="showInGallery" checked>
+      <input type="checkbox" id="showInGallery">
       Also show these in the public gallery
     </label>
-    <p class="field-hint">Photos in a private album never appear in the gallery.</p>
+    <p class="field-hint">Off by default. You can turn it on for a single photo later from its full-size view.</p>
 
     <div class="progress" id="progressBar" hidden><span></span></div>
 
@@ -303,23 +306,26 @@ function openUploadModal(presetAlbum) {
   const fileList = document.getElementById('fileList');
   const submit = document.getElementById('uploadSubmit');
   let files = [];
+  let lastBatchError = 'unknown error';
 
   function setFiles(list) {
     const all = Array.from(list);
     const picked = all.filter(isImage);
     const skipped = all.filter(f => !isImage(f));
 
-    files = picked.slice(0, 25);
-    const overflow = picked.length - files.length;
+    files = picked;
 
-    fileList.innerHTML = files
-      .map(f => `<div>${esc(f.name)} <span style="color:var(--text-muted)">${(f.size / 1024 / 1024).toFixed(1)} MB</span></div>`)
-      .join('');
+    // A long selection would make a huge DOM list, so summarise past a point
+    if (files.length <= 12) {
+      fileList.innerHTML = files
+        .map(f => `<div>${esc(f.name)} <span style="color:var(--text-muted)">${(f.size / 1024 / 1024).toFixed(1)} MB</span></div>`)
+        .join('');
+    } else {
+      const mb = files.reduce((sum, f) => sum + f.size, 0) / 1024 / 1024;
+      fileList.innerHTML = `<div>${files.length} photos selected <span style="color:var(--text-muted)">${mb.toFixed(0)} MB total</span></div>`;
+    }
 
-    const notes = [];
-    if (skipped.length) notes.push(`${skipped.length} file${skipped.length === 1 ? '' : 's'} skipped, not an image`);
-    if (overflow) notes.push(`${overflow} over the 25 file limit`);
-    if (notes.length) modalError(notes.join(' \u00b7 '));
+    if (skipped.length) modalError(`${skipped.length} file${skipped.length === 1 ? '' : 's'} skipped, not an image`);
     else clearModalError();
 
     submit.disabled = files.length === 0;
@@ -338,50 +344,86 @@ function openUploadModal(presetAlbum) {
   }));
   dropzone.addEventListener('drop', e => setFiles(e.dataTransfer.files));
 
-  submit.addEventListener('click', () => {
+  // Photos go up a few at a time. The server holds each batch in memory, so a
+  // small batch keeps peak memory well under the instance limit no matter how
+  // many photos are selected, and a failure only costs that batch.
+  const BATCH_SIZE = 4;
+
+  function uploadBatch(batch, album, showInGallery, onProgress) {
+    return new Promise((resolve, reject) => {
+      const form = new FormData();
+      batch.forEach(f => form.append('files', f));
+      if (album) form.append('album', album);
+      form.append('showInGallery', String(showInGallery));
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', API + '/api/photos');
+      xhr.setRequestHeader('Authorization', `Bearer ${state.owner.token}`);
+      xhr.upload.addEventListener('progress', e => {
+        if (e.lengthComputable) onProgress(e.loaded / e.total);
+      });
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) return resolve();
+        let message = `Upload failed (${xhr.status})`;
+        try { message = JSON.parse(xhr.responseText).error || message; } catch (err) { /* keep default */ }
+        reject(new Error(message));
+      });
+      xhr.addEventListener('error', () => reject(new Error('Network error')));
+      xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+      xhr.send(form);
+    });
+  }
+
+  submit.addEventListener('click', async () => {
     const album = document.getElementById('albumSelect').value;
     const showInGallery = document.getElementById('showInGallery').checked;
     const progress = document.getElementById('progressBar');
     const bar = progress.querySelector('span');
-
-    const form = new FormData();
-    files.forEach(f => form.append('files', f));
-    if (album) form.append('album', album);
-    form.append('showInGallery', String(showInGallery));
+    const total = files.length;
 
     submit.disabled = true;
-    submit.textContent = 'Uploading...';
     progress.hidden = false;
+    clearModalError();
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', API + '/api/photos');
-    xhr.setRequestHeader('Authorization', `Bearer ${state.owner.token}`);
-    xhr.upload.addEventListener('progress', e => {
-      if (e.lengthComputable) bar.style.width = `${Math.round((e.loaded / e.total) * 92)}%`;
-    });
-    xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        bar.style.width = '100%';
-        const count = files.length;
-        closeModal();
-        toast(`Uploaded ${count} photo${count === 1 ? '' : 's'}`);
-        render();
-      } else {
-        let message = 'Upload failed';
-        try { message = JSON.parse(xhr.responseText).error || message; } catch (err) { /* ignore */ }
-        submit.disabled = false;
-        submit.textContent = `Upload ${files.length}`;
-        progress.hidden = true;
-        modalError(message);
+    let uploaded = 0;
+    const failed = [];
+
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batch = files.slice(i, i + BATCH_SIZE);
+      submit.textContent = total > BATCH_SIZE
+        ? `Uploading ${uploaded + 1}-${Math.min(uploaded + batch.length, total)} of ${total}`
+        : 'Uploading...';
+
+      try {
+        await uploadBatch(batch, album, showInGallery, fraction => {
+          const overall = (uploaded + fraction * batch.length) / total;
+          bar.style.width = `${Math.round(overall * 100)}%`;
+        });
+      } catch (err) {
+        batch.forEach(f => failed.push(f.name));
+        lastBatchError = err.message;
       }
-    });
-    xhr.addEventListener('error', () => {
-      submit.disabled = false;
-      submit.textContent = `Upload ${files.length}`;
-      progress.hidden = true;
-      modalError('Network error, the server may be waking up. Try again.');
-    });
-    xhr.send(form);
+
+      uploaded += batch.length;
+      bar.style.width = `${Math.round((uploaded / total) * 100)}%`;
+    }
+
+    const ok = total - failed.length;
+
+    if (failed.length === 0) {
+      closeModal();
+      toast(`Uploaded ${ok} photo${ok === 1 ? '' : 's'}`);
+      render();
+      return;
+    }
+
+    // Some went up, some did not. Keep the modal open and say exactly what happened.
+    progress.hidden = true;
+    submit.disabled = false;
+    submit.textContent = `Retry ${failed.length}`;
+    files = files.filter(f => failed.includes(f.name));
+    modalError(`${ok} uploaded, ${failed.length} failed (${lastBatchError}). Press retry to try the rest again.`);
+    render();
   });
 }
 
@@ -522,6 +564,70 @@ function promptAlbumPassword(album) {
   });
 }
 
+
+/* ------------------------------------------------------------------ *
+ * Image preloading
+ *
+ * Opening a photo used to wait on a full-size download. Now every photo in
+ * the current view gets its mid-size preview fetched quietly in the
+ * background, so the lightbox has something correct to paint immediately,
+ * and the full size for the photos either side is fetched ahead of time so
+ * the arrow keys do not wait on the network.
+ * ------------------------------------------------------------------ */
+
+const imageCache = new Map(); // url -> Promise, also keeps the Image alive
+const imageReady = new Set(); // urls that have actually finished loading
+const PREVIEW_CONCURRENCY = 5;
+const NEIGHBOURS_AHEAD = 2;
+
+function preload(url) {
+  if (!url) return Promise.resolve();
+  if (imageCache.has(url)) return imageCache.get(url);
+
+  const p = new Promise(resolve => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => { imageReady.add(url); resolve(img); };
+    img.onerror = () => resolve(null); // a miss should never break navigation
+    img.src = url;
+  });
+  imageCache.set(url, p);
+  return p;
+}
+
+function isReady(url) {
+  return imageReady.has(url);
+}
+
+// Walk the list a few at a time so a big album does not open 200 connections
+let warmToken = 0;
+async function warmPreviews(photos) {
+  const token = ++warmToken;
+  const queue = photos.map(p => p.preview || p.full).filter(Boolean);
+  let i = 0;
+
+  async function worker() {
+    while (i < queue.length) {
+      if (token !== warmToken) return; // the view changed, stop working
+      const url = queue[i++];
+      await preload(url);
+    }
+  }
+
+  await Promise.all(Array.from({ length: PREVIEW_CONCURRENCY }, worker));
+}
+
+function warmNeighbours(index) {
+  const n = state.photos.length;
+  if (!n) return;
+  for (let step = 1; step <= NEIGHBOURS_AHEAD; step++) {
+    const next = state.photos[(index + step) % n];
+    const prev = state.photos[(index - step + n) % n];
+    if (next) preload(next.full);
+    if (prev) preload(prev.full);
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * Lightbox
  * ------------------------------------------------------------------ */
@@ -531,14 +637,17 @@ function openLightbox(index) {
   const photo = state.photos[index];
   if (!photo) return;
 
-  el.lbImage.src = photo.full;
+  showPhoto(photo);
   el.lbImage.alt = photo.caption || 'Photo';
   el.lbCaption.textContent = photo.caption || '';
   el.lbMeta.textContent = formatDate(photo.takenAt || photo.uploadedAt);
 
   const owner = isOwner();
   el.lbOwnerTools.hidden = !owner;
-  if (owner) el.lbCaptionInput.value = photo.caption || '';
+  if (owner) {
+    el.lbCaptionInput.value = photo.caption || '';
+    el.lbInGallery.checked = !!photo.showInGallery;
+  }
 
   const many = state.photos.length > 1;
   el.lbPrev.hidden = !many;
@@ -546,6 +655,7 @@ function openLightbox(index) {
 
   el.lightbox.hidden = false;
   document.body.style.overflow = 'hidden';
+  warmNeighbours(index);
 }
 
 function closeLightbox() {
@@ -553,6 +663,30 @@ function closeLightbox() {
   el.lbImage.src = '';
   state.lightboxIndex = -1;
   document.body.style.overflow = '';
+}
+
+// Paint the best image already in hand, then upgrade to the full size when it
+// arrives, provided the user has not moved on in the meantime.
+function showPhoto(photo) {
+  el.lbImage.dataset.photoId = photo.id;
+  if (isReady(photo.full)) {
+    el.lbImage.classList.remove('is-preview');
+    el.lbImage.src = photo.full;
+  } else if (isReady(photo.preview)) {
+    el.lbImage.classList.add('is-preview');
+    el.lbImage.src = photo.preview;
+  } else {
+    el.lbImage.classList.add('is-preview');
+    el.lbImage.src = photo.preview || photo.full;
+  }
+
+  const wanted = photo.id;
+  preload(photo.full).then(() => {
+    const current = state.photos[state.lightboxIndex];
+    if (!current || current.id !== wanted) return; // moved on already
+    el.lbImage.src = photo.full;
+    el.lbImage.classList.remove('is-preview');
+  });
 }
 
 function step(delta) {
@@ -576,6 +710,25 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (!el.modal.hidden && e.key === 'Escape') closeModal();
+});
+
+// Removing a photo from the public gallery leaves it in its album untouched.
+el.lbInGallery.addEventListener('change', async () => {
+  const photo = state.photos[state.lightboxIndex];
+  if (!photo) return;
+  const wanted = el.lbInGallery.checked;
+  el.lbInGallery.disabled = true;
+  try {
+    await api(`/api/photos/${photo.id}`, { method: 'PATCH', json: { showInGallery: wanted } });
+    photo.showInGallery = wanted;
+    toast(wanted ? 'Showing in the gallery' : 'Removed from the gallery, still in its album');
+    refreshTileFlag(state.lightboxIndex);
+  } catch (err) {
+    el.lbInGallery.checked = !wanted; // put it back, the server said no
+    toast(err.message);
+  } finally {
+    el.lbInGallery.disabled = false;
+  }
 });
 
 el.lbSaveCaption.addEventListener('click', async () => {
@@ -612,6 +765,153 @@ el.lbDelete.addEventListener('click', async () => {
   }
 });
 
+
+/* ------------------------------------------------------------------ *
+ * Selection bar and bulk actions
+ * ------------------------------------------------------------------ */
+
+function renderSelectBar() {
+  const bar = document.getElementById('selectBar');
+  if (!bar) return;
+  const n = state.selected.size;
+  bar.hidden = n === 0;
+  if (n === 0) return;
+  bar.querySelector('.count').textContent = `${n} selected`;
+}
+
+function clearSelection() {
+  state.selected.clear();
+  document.querySelectorAll('.tile.selected').forEach(t => t.classList.remove('selected'));
+  renderSelectBar();
+}
+
+function selectedIds() {
+  return Array.from(state.selected);
+}
+
+function openMoveModal() {
+  const options = state.albums
+    .filter(al => al.slug !== state.albumSlug)
+    .map(al => `<option value="${esc(al.slug)}">${esc(al.name)}${al.visibility === 'private' ? ' (private)' : ''}</option>`)
+    .join('');
+
+  const n = state.selected.size;
+  openModal(`
+    <h2>Move ${n} photo${n === 1 ? '' : 's'}</h2>
+    <p class="modal-sub">They keep their captions. Moving into a private album takes them out of the public gallery.</p>
+    <div class="field">
+      <label for="moveTarget">Move to</label>
+      <select id="moveTarget">
+        <option value="">Gallery (no album)</option>
+        ${options}
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-sm btn-ghost" type="button" data-close="1">Cancel</button>
+      <button class="btn btn-sm btn-primary" type="button" id="moveConfirm">Move</button>
+    </div>
+  `);
+
+  document.getElementById('moveConfirm').addEventListener('click', async () => {
+    const button = document.getElementById('moveConfirm');
+    const target = document.getElementById('moveTarget').value || null;
+    button.disabled = true;
+    button.textContent = 'Moving...';
+    try {
+      const data = await api('/api/photos/bulk', {
+        method: 'POST',
+        json: { action: 'move', ids: selectedIds(), album: target }
+      });
+      closeModal();
+      clearSelection();
+      toast(`Moved ${data.count} photo${data.count === 1 ? '' : 's'}`);
+      render();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = 'Move';
+      modalError(err.message);
+    }
+  });
+}
+
+function openBulkDeleteModal() {
+  const n = state.selected.size;
+  openModal(`
+    <h2>Delete ${n} photo${n === 1 ? '' : 's'}?</h2>
+    <p class="modal-sub">This removes them from Cloudinary as well. It cannot be undone.</p>
+    <div class="modal-actions">
+      <button class="btn btn-sm btn-ghost" type="button" data-close="1">Cancel</button>
+      <button class="btn btn-sm btn-primary" type="button" id="bulkDeleteConfirm">Delete ${n}</button>
+    </div>
+  `);
+
+  document.getElementById('bulkDeleteConfirm').addEventListener('click', async () => {
+    const button = document.getElementById('bulkDeleteConfirm');
+    button.disabled = true;
+    button.textContent = 'Deleting...';
+    try {
+      const data = await api('/api/photos/bulk', { method: 'POST', json: { action: 'delete', ids: selectedIds() } });
+      closeModal();
+      clearSelection();
+      toast(`Deleted ${data.count} photo${data.count === 1 ? '' : 's'}`);
+      render();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = `Delete ${n}`;
+      modalError(err.message);
+    }
+  });
+}
+
+function selectBarHTML() {
+  return `
+    <div class="select-bar" id="selectBar" hidden>
+      <span class="count">0 selected</span>
+      <span class="spacer"></span>
+      <button type="button" id="selectPublic">Make public</button>
+      <button type="button" id="selectPrivate">Make private</button>
+      <button type="button" id="selectMove">Move to album</button>
+      <button type="button" id="selectDelete" class="danger">Delete</button>
+      <button type="button" id="selectClear">Clear</button>
+    </div>
+  `;
+}
+
+async function setSelectedVisibility(makePublic) {
+  const ids = selectedIds();
+  const buttons = document.querySelectorAll('#selectBar button');
+  buttons.forEach(b => { b.disabled = true; });
+  try {
+    const data = await api('/api/photos/bulk', {
+      method: 'POST',
+      json: { action: makePublic ? 'public' : 'private', ids }
+    });
+    const word = makePublic ? 'public' : 'private';
+    const skipped = data.blocked
+      ? `, ${data.blocked} skipped (in a private album)`
+      : '';
+    toast(`${data.count} photo${data.count === 1 ? '' : 's'} made ${word}${skipped}`);
+    clearSelection();
+    render();
+  } catch (err) {
+    toast(err.message);
+    buttons.forEach(b => { b.disabled = false; });
+  }
+}
+
+function wireSelectBar() {
+  const move = document.getElementById('selectMove');
+  const pub = document.getElementById('selectPublic');
+  const priv = document.getElementById('selectPrivate');
+  if (pub) pub.addEventListener('click', () => setSelectedVisibility(true));
+  if (priv) priv.addEventListener('click', () => setSelectedVisibility(false));
+  const del = document.getElementById('selectDelete');
+  const clear = document.getElementById('selectClear');
+  if (move) move.addEventListener('click', openMoveModal);
+  if (del) del.addEventListener('click', openBulkDeleteModal);
+  if (clear) clear.addEventListener('click', clearSelection);
+}
+
 /* ------------------------------------------------------------------ *
  * Rendering
  * ------------------------------------------------------------------ */
@@ -625,13 +925,37 @@ function skeletons() {
 function photoGridHTML(photos) {
   return `<div class="grid" id="photoGrid" style="--cols:${state.cols}">${
     photos.map((p, i) => `
-      <figure class="tile" data-index="${i}">
-        <img src="${esc(p.thumb)}" alt="${esc(p.caption || '')}" loading="lazy">
-        ${p.caption ? `<figcaption class="tile-caption">${esc(p.caption)}</figcaption>` : ''}
-        ${isOwner() && !p.showInGallery ? '<span class="tile-flag">Hidden</span>' : ''}
+      <figure class="tile${state.editing ? ' editing' : ''}${state.selected.has(p.id) ? ' selected' : ''}" data-index="${i}" data-id="${esc(p.id)}">
+        <img src="${esc(p.thumb)}" alt="${esc(p.caption || '')}" loading="lazy" draggable="false">
+        ${p.caption && !state.editing ? `<figcaption class="tile-caption">${esc(p.caption)}</figcaption>` : ''}
+        ${publicBadge(p)}
+        ${state.editing ? '<span class="tile-check">\u2713</span>' : ''}
       </figure>
     `).join('')
   }</div>`;
+}
+
+// Inside an album most photos are private, so only the public ones are worth
+// marking. In the gallery everything is public, so a badge there says nothing.
+function publicBadge(photo) {
+  const worthShowing = isOwner() && state.view === 'album' && photo.showInGallery;
+  return worthShowing ? '<span class="tile-flag">Public</span>' : '';
+}
+
+function refreshTileFlag(index) {
+  const tile = document.querySelector(`.tile[data-index="${index}"]`);
+  if (!tile) return;
+  const photo = state.photos[index];
+  const existing = tile.querySelector('.tile-flag');
+  const wanted = isOwner() && state.view === 'album' && photo && photo.showInGallery;
+  if (wanted && !existing) {
+    const flag = document.createElement('span');
+    flag.className = 'tile-flag';
+    flag.textContent = 'Public';
+    tile.appendChild(flag);
+  } else if (!wanted && existing) {
+    existing.remove();
+  }
 }
 
 function paintGrid() {
@@ -647,9 +971,104 @@ function wireGrid() {
     if (img.complete) img.classList.add('loaded');
     else img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
   });
+
+  if (!state.editing) {
+    grid.querySelectorAll('.tile').forEach(tile => {
+      tile.addEventListener('click', () => openLightbox(Number(tile.dataset.index)));
+    });
+    return;
+  }
+
+  wireEditGrid(grid);
+}
+
+/* ------------------------------------------------------------------ *
+ * Edit mode: press and release selects, press and move reorders
+ * ------------------------------------------------------------------ */
+
+const DRAG_THRESHOLD = 6; // px of movement before a click becomes a drag
+
+function wireEditGrid(grid) {
   grid.querySelectorAll('.tile').forEach(tile => {
-    tile.addEventListener('click', () => openLightbox(Number(tile.dataset.index)));
+    tile.addEventListener('pointerdown', e => beginPress(e, tile, grid));
   });
+}
+
+function beginPress(e, tile, grid) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  e.preventDefault();
+
+  const startX = e.clientX;
+  const startY = e.clientY;
+  let dragging = false;
+  let placeholderAfter = null;
+
+  function onMove(ev) {
+    if (!dragging) {
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
+      dragging = true;
+      tile.classList.add('dragging');
+    }
+
+    const under = document.elementFromPoint(ev.clientX, ev.clientY);
+    const target = under && under.closest ? under.closest('.tile') : null;
+    grid.querySelectorAll('.drop-target').forEach(t => t.classList.remove('drop-target'));
+    if (!target || target === tile) return;
+
+    target.classList.add('drop-target');
+
+    // Insert before or after depending on which half of the target we are over
+    const box = target.getBoundingClientRect();
+    const after = ev.clientX > box.left + box.width / 2;
+    placeholderAfter = after;
+    if (after) target.after(tile);
+    else target.before(tile);
+  }
+
+  function onUp() {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    grid.querySelectorAll('.drop-target').forEach(t => t.classList.remove('drop-target'));
+    tile.classList.remove('dragging');
+
+    if (!dragging) {
+      toggleSelection(tile);
+      return;
+    }
+    commitOrder(grid);
+  }
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
+function toggleSelection(tile) {
+  const id = tile.dataset.id;
+  if (state.selected.has(id)) {
+    state.selected.delete(id);
+    tile.classList.remove('selected');
+  } else {
+    state.selected.add(id);
+    tile.classList.add('selected');
+  }
+  renderSelectBar();
+}
+
+async function commitOrder(grid) {
+  const ids = Array.from(grid.querySelectorAll('.tile')).map(t => t.dataset.id);
+
+  // Reindex in place so the lightbox and selection keep pointing at the right photos
+  const byId = new Map(state.photos.map(p => [p.id, p]));
+  state.photos = ids.map(id => byId.get(id)).filter(Boolean);
+  Array.from(grid.querySelectorAll('.tile')).forEach((t, i) => { t.dataset.index = i; });
+
+  try {
+    await api(`/api/albums/${state.albumSlug}/order`, { method: 'PATCH', json: { ids } });
+    toast('Order saved');
+  } catch (err) {
+    toast(`Could not save the order: ${err.message}`);
+    render();
+  }
 }
 
 function emptyState(title, body) {
@@ -673,6 +1092,7 @@ async function renderGallery() {
       ${photoGridHTML(state.photos)}
     `;
     wireGrid();
+    warmPreviews(state.photos);
   } catch (err) {
     el.main.innerHTML = emptyState('Could not load photos', err.message);
   }
@@ -777,11 +1197,15 @@ async function renderAlbum(slug) {
       const list = await api('/api/albums');
       state.albums = list.albums;
     }
+
     const data = await api(`/api/albums/${slug}/photos`, { albumToken: albumToken(slug) });
     state.photos = data.photos;
 
     const ownerBar = isOwner()
-      ? `<button class="btn btn-sm btn-outline" id="albumUploadBtn" type="button">Add photos</button>`
+      ? `<div style="display:flex;gap:8px">
+           <button class="btn btn-sm btn-outline" id="albumEditBtn" type="button">${state.editing ? 'Done' : 'Edit'}</button>
+           <button class="btn btn-sm btn-outline" id="albumUploadBtn" type="button">Add photos</button>
+         </div>`
       : `<span class="section-count">${state.photos.length} photo${state.photos.length === 1 ? '' : 's'}</span>`;
 
     el.main.innerHTML = `
@@ -790,13 +1214,28 @@ async function renderAlbum(slug) {
         <h2>${esc(data.album.name)}${data.album.visibility === 'private' ? ' <span class="section-count">· private</span>' : ''}</h2>
         ${ownerBar}
       </div>
+      ${state.editing ? selectBarHTML() : ''}
+      ${state.editing ? '<p class="edit-hint">Drag a photo to reorder. Click one to select it.</p>' : ''}
       ${state.photos.length
         ? photoGridHTML(state.photos)
         : emptyState('This album is empty', isOwner() ? 'Add some photos to fill it out.' : 'Nothing in here yet.')}
     `;
     wireGrid();
+    warmPreviews(state.photos);
+    if (state.editing) {
+      wireSelectBar();
+      renderSelectBar();
+    }
+
     const uploadBtn = document.getElementById('albumUploadBtn');
     if (uploadBtn) uploadBtn.addEventListener('click', () => openUploadModal(slug));
+
+    const editBtn = document.getElementById('albumEditBtn');
+    if (editBtn) editBtn.addEventListener('click', () => {
+      state.editing = !state.editing;
+      state.selected.clear();
+      render();
+    });
   } catch (err) {
     if (err.status === 401 && err.data && err.data.locked) {
       const album = state.albums.find(a => a.slug === slug) || { slug, name: 'Private album' };
@@ -848,6 +1287,8 @@ function readHash() {
 
 window.addEventListener('hashchange', () => {
   closeLightbox();
+  state.editing = false;
+  state.selected.clear();
   readHash();
   render();
 });

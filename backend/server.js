@@ -64,9 +64,10 @@ const photoSchema = new mongoose.Schema({
   bytes: Number,
   caption: { type: String, default: '' },
   album: { type: String, default: null, index: true }, // album slug, null = loose in gallery
-  showInGallery: { type: Boolean, default: true },
+  showInGallery: { type: Boolean, default: false },
   takenAt: { type: Date, default: null },
-  uploadedAt: { type: Date, default: Date.now }
+  uploadedAt: { type: Date, default: Date.now },
+  position: { type: Number, default: null }
 });
 const Photo = mongoose.model('Photo', photoSchema);
 
@@ -146,14 +147,44 @@ function serializePhoto(photo) {
     height: photo.height,
     takenAt: photo.takenAt,
     uploadedAt: photo.uploadedAt,
+    position: photo.position,
     thumb: derive(photo.url, 'c_fill,g_auto,w_700,h_700,q_auto,f_auto'),
-    full: derive(photo.url, 'c_limit,w_2000,h_2000,q_auto,f_auto'),
+    preview: derive(photo.url, 'c_limit,w_800,q_auto,f_auto'),
+    full: derive(photo.url, 'c_limit,w_1800,h_1800,q_auto,f_auto'),
     original: photo.url
   };
 }
 
 function sortKey(photo) {
   return photo.takenAt || photo.uploadedAt;
+}
+
+// Albums use the order I dragged them into. Photos uploaded before ordering
+// existed have no position, so the first time an album is opened they get one
+// based on the date order they were already showing in. That happens once.
+async function orderedAlbumPhotos(slug) {
+  const photos = await Photo.find({ album: slug });
+  const unpositioned = photos.filter(p => p.position === null || p.position === undefined);
+
+  if (unpositioned.length) {
+    photos.sort((a, b) => sortKey(b) - sortKey(a));
+    for (let i = 0; i < photos.length; i++) {
+      if (photos[i].position !== i) {
+        photos[i].position = i;
+        await photos[i].save();
+      }
+    }
+    return photos;
+  }
+
+  photos.sort((a, b) => a.position - b.position);
+  return photos;
+}
+
+async function nextPositionIn(slug) {
+  if (!slug) return null;
+  const last = await Photo.findOne({ album: slug }).sort({ position: -1 }).select('position');
+  return last && typeof last.position === 'number' ? last.position + 1 : 0;
 }
 
 async function requireOwner(req, res, next) {
@@ -222,7 +253,7 @@ const upload = multer({
     if (byMime || (generic && byName)) cb(null, true);
     else cb(new Error(`${file.originalname} is not an image file`), false);
   },
-  limits: { fileSize: 25 * 1024 * 1024, files: 25 }
+  limits: { fileSize: 25 * 1024 * 1024, files: 8 }
 });
 
 function uploadToCloudinary(buffer, folder) {
@@ -452,8 +483,7 @@ app.get('/api/albums/:slug/photos', detectOwner, async (req, res) => {
       }
     }
 
-    const photos = await Photo.find({ album: album.slug });
-    photos.sort((a, b) => sortKey(b) - sortKey(a));
+    const photos = await orderedAlbumPhotos(album.slug);
     res.json({
       album: { name: album.name, slug: album.slug, visibility: album.visibility },
       photos: photos.map(serializePhoto)
@@ -468,7 +498,7 @@ app.get('/api/albums/:slug/photos', detectOwner, async (req, res) => {
  * Photos
  * ------------------------------------------------------------------ */
 
-app.post('/api/photos', requireOwner, upload.array('files', 25), async (req, res) => {
+app.post('/api/photos', requireOwner, upload.array('files', 8), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No images were sent' });
@@ -482,11 +512,13 @@ app.post('/api/photos', requireOwner, upload.array('files', 25), async (req, res
     }
 
     const folder = albumSlug ? `photos/${albumSlug}` : 'photos/gallery';
+    // Off unless explicitly requested, and never on for a private album
     const showInGallery = album && album.visibility === 'private'
       ? false
-      : req.body.showInGallery !== 'false';
+      : req.body.showInGallery === 'true';
 
     const saved = [];
+    let position = await nextPositionIn(albumSlug);
     for (const file of req.files) {
       const result = await uploadToCloudinary(file.buffer, folder);
       const meta = result.image_metadata || {};
@@ -500,7 +532,8 @@ app.post('/api/photos', requireOwner, upload.array('files', 25), async (req, res
         caption: '',
         album: albumSlug,
         showInGallery,
-        takenAt: parseExifDate(meta.DateTimeOriginal || meta.DateTime || meta.CreateDate)
+        takenAt: parseExifDate(meta.DateTimeOriginal || meta.DateTime || meta.CreateDate),
+        position: position === null ? null : position++
       });
       saved.push(serializePhoto(photo));
     }
@@ -512,13 +545,110 @@ app.post('/api/photos', requireOwner, upload.array('files', 25), async (req, res
   }
 });
 
+
+// Save a hand-dragged order for one album
+app.patch('/api/albums/:slug/order', requireOwner, async (req, res) => {
+  try {
+    const album = await Album.findOne({ slug: req.params.slug });
+    if (!album) return res.status(404).json({ error: 'Album not found' });
+
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : null;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'Send the photo ids in their new order' });
+
+    const photos = await Photo.find({ album: album.slug }).select('_id');
+    const known = new Set(photos.map(p => String(p._id)));
+    if (ids.length !== known.size || !ids.every(id => known.has(String(id)))) {
+      return res.status(400).json({ error: 'That order does not match the photos in this album' });
+    }
+
+    for (let i = 0; i < ids.length; i++) {
+      await Photo.updateOne({ _id: ids[i], album: album.slug }, { position: i });
+    }
+    res.json({ ok: true, count: ids.length });
+  } catch (err) {
+    console.error('Reorder error:', err);
+    res.status(500).json({ error: 'Could not save the new order' });
+  }
+});
+
+// Delete or move several photos at once
+app.post('/api/photos/bulk', requireOwner, async (req, res) => {
+  try {
+    const { action, ids } = req.body;
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'No photos selected' });
+    if (ids.length > 500) return res.status(400).json({ error: 'Too many photos in one go, keep it under 500' });
+
+    const photos = await Photo.find({ _id: { $in: ids } });
+    if (!photos.length) return res.status(404).json({ error: 'Those photos no longer exist' });
+
+    if (action === 'delete') {
+      let removed = 0;
+      for (const photo of photos) {
+        try { await cloudinary.uploader.destroy(photo.publicId); } catch (err) { /* orphan is acceptable */ }
+        await Photo.deleteOne({ _id: photo._id });
+        removed++;
+      }
+      return res.json({ ok: true, action, count: removed });
+    }
+
+    if (action === 'public' || action === 'private') {
+      const makePublic = action === 'public';
+      let changed = 0;
+      let blocked = 0;
+      for (const photo of photos) {
+        // A private album's photos can never be pushed into the public gallery
+        if (makePublic && photo.album) {
+          const alb = await Album.findOne({ slug: photo.album });
+          if (alb && alb.visibility === 'private') { blocked++; continue; }
+        }
+        photo.showInGallery = makePublic;
+        await photo.save();
+        changed++;
+      }
+      return res.json({ ok: true, action, count: changed, blocked });
+    }
+
+    if (action === 'move') {
+      const target = req.body.album || null;
+      let targetAlbum = null;
+      if (target) {
+        targetAlbum = await Album.findOne({ slug: target });
+        if (!targetAlbum) return res.status(400).json({ error: 'That album does not exist' });
+      }
+
+      let position = await nextPositionIn(target);
+      for (const photo of photos) {
+        photo.album = target;
+        photo.position = position === null ? null : position++;
+        // A private album must never contain a photo flagged for the public gallery
+        if (targetAlbum && targetAlbum.visibility === 'private') photo.showInGallery = false;
+        await photo.save();
+      }
+      return res.json({ ok: true, action, count: photos.length, album: target });
+    }
+
+    res.status(400).json({ error: 'Unknown action' });
+  } catch (err) {
+    console.error('Bulk error:', err);
+    res.status(500).json({ error: 'Could not complete that' });
+  }
+});
+
 app.patch('/api/photos/:id', requireOwner, async (req, res) => {
   try {
     const photo = await Photo.findById(req.params.id);
     if (!photo) return res.status(404).json({ error: 'Photo not found' });
 
     if (typeof req.body.caption === 'string') photo.caption = req.body.caption.slice(0, 500);
-    if (typeof req.body.showInGallery === 'boolean') photo.showInGallery = req.body.showInGallery;
+    if (typeof req.body.showInGallery === 'boolean') {
+      if (req.body.showInGallery && photo.album) {
+        const current = await Album.findOne({ slug: photo.album });
+        if (current && current.visibility === 'private') {
+          return res.status(400).json({ error: 'Photos in a private album cannot be shown in the public gallery' });
+        }
+      }
+      photo.showInGallery = req.body.showInGallery;
+    }
     if ('album' in req.body) {
       const target = req.body.album || null;
       if (target) {
