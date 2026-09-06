@@ -593,7 +593,10 @@ function promptAlbumPassword(album) {
 const imageCache = new Map(); // url -> Promise, also keeps the Image alive
 const imageReady = new Set(); // urls that have actually finished loading
 const PREVIEW_CONCURRENCY = 5;
-const NEIGHBOURS_AHEAD = 2;
+// Full-size images are now native resolution, so each one is worth several
+// megabytes. One either side keeps the arrows instant without pulling down
+// half an album every time a photo is opened.
+const NEIGHBOURS_AHEAD = 1;
 
 function preload(url) {
   if (!url) return Promise.resolve();
@@ -809,6 +812,14 @@ function selectedIds() {
   return Array.from(state.selected);
 }
 
+async function ensureAlbums() {
+  if (state.albums.length) return;
+  try {
+    const data = await api('/api/albums');
+    state.albums = data.albums;
+  } catch (err) { /* the dialog still offers the gallery */ }
+}
+
 function openMoveModal() {
   const options = state.albums
     .filter(al => al.slug !== state.albumSlug)
@@ -924,7 +935,7 @@ function wireSelectBar() {
   if (priv) priv.addEventListener('click', () => setSelectedVisibility(false));
   const del = document.getElementById('selectDelete');
   const clear = document.getElementById('selectClear');
-  if (move) move.addEventListener('click', openMoveModal);
+  if (move) move.addEventListener('click', async () => { await ensureAlbums(); openMoveModal(); });
   if (del) del.addEventListener('click', openBulkDeleteModal);
   if (clear) clear.addEventListener('click', clearSelection);
 }
@@ -1079,8 +1090,12 @@ async function commitOrder(grid) {
   state.photos = ids.map(id => byId.get(id)).filter(Boolean);
   Array.from(grid.querySelectorAll('.tile')).forEach((t, i) => { t.dataset.index = i; });
 
+  const endpoint = state.view === 'album'
+    ? `/api/albums/${state.albumSlug}/order`
+    : '/api/gallery/order';
+
   try {
-    await api(`/api/albums/${state.albumSlug}/order`, { method: 'PATCH', json: { ids } });
+    await api(endpoint, { method: 'PATCH', json: { ids } });
     toast('Order saved');
   } catch (err) {
     toast(`Could not save the order: ${err.message}`);
@@ -1101,15 +1116,32 @@ async function renderGallery() {
       el.main.innerHTML = emptyState('Nothing here yet', 'Photos added to the gallery will show up on this page.');
       return;
     }
+    const ownerBar = isOwner()
+      ? `<button class="btn btn-sm btn-outline" id="galleryEditBtn" type="button">${state.editing ? 'Done' : 'Edit'}</button>`
+      : `<span class="section-count">${state.photos.length} photo${state.photos.length === 1 ? '' : 's'}</span>`;
+
     el.main.innerHTML = `
       <div class="section-bar">
         <h2>Gallery</h2>
-        <span class="section-count">${state.photos.length} photo${state.photos.length === 1 ? '' : 's'}</span>
+        ${ownerBar}
       </div>
+      ${state.editing ? selectBarHTML() : ''}
+      ${state.editing ? '<p class="edit-hint">Drag a photo to reorder. Click one to select it.</p>' : ''}
       ${photoGridHTML(state.photos)}
     `;
     wireGrid();
     warmPreviews(state.photos);
+    if (state.editing) {
+      wireSelectBar();
+      renderSelectBar();
+    }
+
+    const editBtn = document.getElementById('galleryEditBtn');
+    if (editBtn) editBtn.addEventListener('click', () => {
+      state.editing = !state.editing;
+      state.selected.clear();
+      render();
+    });
   } catch (err) {
     el.main.innerHTML = emptyState('Could not load photos', err.message);
   }

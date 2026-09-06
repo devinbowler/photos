@@ -67,7 +67,8 @@ const photoSchema = new mongoose.Schema({
   showInGallery: { type: Boolean, default: false },
   takenAt: { type: Date, default: null },
   uploadedAt: { type: Date, default: Date.now },
-  position: { type: Number, default: null }
+  position: { type: Number, default: null },
+  galleryPosition: { type: Number, default: null }
 });
 const Photo = mongoose.model('Photo', photoSchema);
 
@@ -148,9 +149,15 @@ function serializePhoto(photo) {
     takenAt: photo.takenAt,
     uploadedAt: photo.uploadedAt,
     position: photo.position,
+    galleryPosition: photo.galleryPosition,
+    // Grid thumbnails are drawn at roughly 300px, so 700px is already a retina
+    // buffer and is where compression is worth having.
     thumb: derive(photo.url, 'c_fill,g_auto,w_700,h_700,q_auto,f_auto'),
-    preview: derive(photo.url, 'c_limit,w_800,q_auto,f_auto'),
-    full: derive(photo.url, 'c_limit,w_1800,h_1800,q_auto,f_auto'),
+    // Small stand-in shown for the instant the full size is still arriving.
+    preview: derive(photo.url, 'c_limit,w_1000,q_auto,f_auto'),
+    // Full size is native resolution at maximum quality: no downscale and no
+    // visible loss. f_auto is still needed so HEIC renders in a browser at all.
+    full: derive(photo.url, 'q_auto:best,f_auto'),
     original: photo.url
   };
 }
@@ -325,7 +332,18 @@ app.get('/api/gallery', detectOwner, async (req, res) => {
     // album and still be published here; the album password gates the album,
     // not the individual photo.
     const photos = await Photo.find({ showInGallery: true });
-    photos.sort((a, b) => sortKey(b) - sortKey(a));
+
+    // Photos I have not placed by hand sort newest first and sit above the
+    // arranged ones, so newly published photos show up at the top without
+    // disturbing an order I dragged.
+    photos.sort((a, b) => {
+      const aPlaced = a.galleryPosition !== null && a.galleryPosition !== undefined;
+      const bPlaced = b.galleryPosition !== null && b.galleryPosition !== undefined;
+      if (aPlaced !== bPlaced) return aPlaced ? 1 : -1;
+      if (aPlaced) return a.galleryPosition - b.galleryPosition;
+      return sortKey(b) - sortKey(a);
+    });
+
     res.json({ photos: photos.map(serializePhoto) });
   } catch (err) {
     console.error('Gallery error:', err);
@@ -544,6 +562,30 @@ app.post('/api/photos', requireOwner, upload.array('files', 8), async (req, res)
   }
 });
 
+
+// Save a hand-dragged order for the public gallery
+app.patch('/api/gallery/order', requireOwner, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : null;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'Send the photo ids in their new order' });
+
+    // The owner's gallery view also contains photos that are not published, so
+    // the order sent here is not the same set as the public gallery. Just check
+    // the ids are real photos and lay them out in the order given.
+    const found = await Photo.find({ _id: { $in: ids } }).select('_id');
+    if (found.length !== ids.length) {
+      return res.status(400).json({ error: 'That order refers to photos that no longer exist' });
+    }
+
+    for (let i = 0; i < ids.length; i++) {
+      await Photo.updateOne({ _id: ids[i] }, { galleryPosition: i });
+    }
+    res.json({ ok: true, count: ids.length });
+  } catch (err) {
+    console.error('Gallery reorder error:', err);
+    res.status(500).json({ error: 'Could not save the new order' });
+  }
+});
 
 // Save a hand-dragged order for one album
 app.patch('/api/albums/:slug/order', requireOwner, async (req, res) => {

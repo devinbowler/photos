@@ -21,12 +21,24 @@ before sending it on to Cloudinary, so batching keeps peak memory flat no
 matter how many photos are selected, and a failed batch reports itself and
 offers a retry of just those files rather than losing the whole run.
 
+The gallery and each album both have an Edit button that turns on reordering
+and selection. The two orders are stored separately, so arranging the gallery
+does not disturb an album a photo also belongs to. In the gallery, photos I
+have not placed by hand sort newest first and sit above the arranged ones, so
+newly published photos appear at the top without disturbing what I dragged.
+
 Inside an album, Edit turns on reordering and selection. Dragging a photo
 moves it and the new order is saved to the album straight away; a click
 without movement selects instead, and selected photos can be moved to
 another album or deleted together. Album order is stored per photo, so
 photos uploaded before ordering existed get positions the first time their
 album is opened, based on the date order they were already in.
+
+Cloudinary stores the uploaded file untouched, so the originals are never
+degraded. The full-size view is served at native resolution with quality set
+to maximum, which is a re-encode but not a visible one; `f_auto` stays in the
+chain because a browser cannot display a HEIC file without it. The untouched
+file is still at the `original` URL on every photo.
 
 Opening a photo does not wait on a download. Every photo in the current view
 has a mid-size preview fetched quietly in the background, so the lightbox
