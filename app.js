@@ -17,6 +17,7 @@ const state = {
 const el = {
   main: document.getElementById('main'),
   tabs: document.getElementById('tabs'),
+  backLink: document.getElementById('backLink'),
   density: document.getElementById('density'),
   uploadBtn: document.getElementById('uploadBtn'),
   sessionPill: document.getElementById('sessionPill'),
@@ -691,6 +692,39 @@ function saveFile(url) {
   a.remove();
 }
 
+// A web page cannot write to the camera roll, but handing the file to the
+// system share sheet gets there in one tap: iOS offers "Save Image" and
+// Android offers the gallery. Falls back to an ordinary download.
+function canShareFiles() {
+  return typeof navigator.canShare === 'function' && typeof navigator.share === 'function';
+}
+
+async function savePhotoToDevice(photo) {
+  const url = photo.download || photo.original;
+  const name = `${(photo.caption || 'photo').replace(/[^a-z0-9]+/gi, '-').slice(0, 40) || 'photo'}.jpg`;
+
+  if (canShareFiles()) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const blob = await res.blob();
+        const file = new File([blob], name, { type: 'image/jpeg' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file] });
+          return 'shared';
+        }
+      }
+    } catch (err) {
+      // A cancelled share sheet lands here too, and should not then start a
+      // download the user just declined.
+      if (err && err.name === 'AbortError') return 'cancelled';
+    }
+  }
+
+  saveFile(url);
+  return 'downloaded';
+}
+
 /* ------------------------------------------------------------------ *
  * Lightbox
  * ------------------------------------------------------------------ */
@@ -767,11 +801,19 @@ el.lightbox.addEventListener('click', e => {
 });
 el.lbClose.addEventListener('click', closeLightbox);
 
-el.lbDownload.addEventListener('click', () => {
+el.lbDownload.addEventListener('click', async () => {
   const photo = state.photos[state.lightboxIndex];
   if (!photo) return;
-  saveFile(photo.download || photo.original);
-  toast('Downloading full resolution JPEG');
+  el.lbDownload.disabled = true;
+  try {
+    const how = await savePhotoToDevice(photo);
+    if (how === 'shared') toast('Choose Save Image to put it in your photos');
+    else if (how === 'downloaded') toast('Downloading full resolution JPEG');
+  } catch (err) {
+    toast('Could not download that photo');
+  } finally {
+    el.lbDownload.disabled = false;
+  }
 });
 el.lbPrev.addEventListener('click', () => step(-1));
 el.lbNext.addEventListener('click', () => step(1));
@@ -1389,6 +1431,16 @@ function render() {
   renderSessionPill();
   // The per-row selector only means something when photos are on screen
   el.density.hidden = state.view === 'albums';
+
+  // Going "back" should mean back within the site until there is nowhere left
+  // to go, and only then out to the portfolio.
+  if (state.view === 'gallery') {
+    el.backLink.href = 'https://devinbowler.com';
+    el.backLink.textContent = '← devinbowler.com';
+  } else {
+    el.backLink.href = '#gallery';
+    el.backLink.textContent = '← Gallery';
+  }
 
   if (state.view === 'gallery') renderGallery();
   else if (state.view === 'albums') renderAlbums();

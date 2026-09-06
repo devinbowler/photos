@@ -34,6 +34,11 @@ another album or deleted together. Album order is stored per photo, so
 photos uploaded before ordering existed get positions the first time their
 album is opened, based on the date order they were already in.
 
+On a phone the download button hands the file to the system share sheet
+instead, so "Save Image" puts it straight in the camera roll. A web page
+cannot write to the photo library directly; this is the closest thing, and it
+falls back to an ordinary download where sharing files is not supported.
+
 A photo can be downloaded from its full-size view, and selected photos can be
 downloaded together from Edit mode, which comes back as one zip. Downloads are
 always jpeg at native resolution and maximum quality, so a HEIC original comes
