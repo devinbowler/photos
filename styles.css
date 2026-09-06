@@ -359,9 +359,7 @@ img { display: block; max-width: 100%; }
   justify-content: center;
   min-height: 0;
 }
-.lightbox-image-wrap img.is-preview { filter: blur(1.5px); }
 .lightbox-image-wrap img {
-  transition: filter .18s ease;
   max-height: 82vh;
   max-width: min(92vw, 1600px);
   width: auto;

@@ -153,8 +153,10 @@ function serializePhoto(photo) {
     // Grid thumbnails are drawn at roughly 300px, so 700px is already a retina
     // buffer and is where compression is worth having.
     thumb: derive(photo.url, 'c_fill,g_auto,w_700,h_700,q_auto,f_auto'),
-    // Small stand-in shown for the instant the full size is still arriving.
-    preview: derive(photo.url, 'c_limit,w_1000,q_auto,f_auto'),
+    // The stand-in shown while the full file arrives. Deliberately modest, a
+    // few hundred KB, because every photo in a view gets one fetched up front
+    // so that opening any of them paints immediately.
+    preview: derive(photo.url, 'c_limit,w_1400,q_auto,f_auto'),
     // Full size is native resolution at maximum quality: no downscale and no
     // visible loss. f_auto is still needed so HEIC renders in a browser at all.
     full: derive(photo.url, 'q_auto:best,f_auto'),

@@ -592,11 +592,14 @@ function promptAlbumPassword(album) {
 
 const imageCache = new Map(); // url -> Promise, also keeps the Image alive
 const imageReady = new Set(); // urls that have actually finished loading
-const PREVIEW_CONCURRENCY = 5;
-// Full-size images are now native resolution, so each one is worth several
-// megabytes. One either side keeps the arrows instant without pulling down
-// half an album every time a photo is opened.
+const PREVIEW_CONCURRENCY = 4;
+// Full-size images are native resolution and worth several megabytes each, so
+// they are fetched narrowly: the neighbours, and whatever the cursor is on.
 const NEIGHBOURS_AHEAD = 1;
+// Every photo in a view gets its stand-in fetched, so any of them opens
+// instantly. Stand-ins are a few hundred KB, so a normal album is a handful of
+// megabytes. The cap only exists to stop something pathological.
+const WARM_LIMIT = 400;
 
 function preload(url) {
   if (!url) return Promise.resolve();
@@ -618,10 +621,20 @@ function isReady(url) {
 }
 
 // Walk the list a few at a time so a big album does not open 200 connections
+// Respect a metered or slow connection rather than pulling an album over it
+function connectionIsCheap() {
+  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!c) return true;                       // no information, assume normal
+  if (c.saveData) return false;              // the user asked for less data
+  if (c.effectiveType && /^(slow-2g|2g|3g)$/.test(c.effectiveType)) return false;
+  return true;
+}
+
 let warmToken = 0;
 async function warmPreviews(photos) {
   const token = ++warmToken;
-  const queue = photos.map(p => p.preview || p.full).filter(Boolean);
+  const budget = connectionIsCheap() ? WARM_LIMIT : 12;
+  const queue = photos.slice(0, budget).map(p => p.preview || p.full).filter(Boolean);
   let i = 0;
 
   async function worker() {
@@ -638,12 +651,31 @@ async function warmPreviews(photos) {
 function warmNeighbours(index) {
   const n = state.photos.length;
   if (!n) return;
+
+  // Previews reach a bit further than full sizes: they are small, and having
+  // one ready is the difference between an instant paint and a blank frame.
+  for (let step = 1; step <= 3; step++) {
+    const next = state.photos[(index + step) % n];
+    const prev = state.photos[(index - step + n) % n];
+    if (next) preload(next.preview);
+    if (prev) preload(prev.preview);
+  }
+
   for (let step = 1; step <= NEIGHBOURS_AHEAD; step++) {
     const next = state.photos[(index + step) % n];
     const prev = state.photos[(index - step + n) % n];
     if (next) preload(next.full);
     if (prev) preload(prev.full);
   }
+}
+
+// A click is almost always preceded by the cursor arriving, so start fetching
+// then. By the time the photo is actually opened the file is usually in hand.
+function warmOnHover(tile) {
+  const photo = state.photos[Number(tile.dataset.index)];
+  if (!photo) return;
+  preload(photo.preview);
+  preload(photo.full);
 }
 
 /* ------------------------------------------------------------------ *
@@ -998,6 +1030,10 @@ function wireGrid() {
   grid.querySelectorAll('img').forEach(img => {
     if (img.complete) img.classList.add('loaded');
     else img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
+  });
+
+  grid.querySelectorAll('.tile').forEach(tile => {
+    tile.addEventListener('pointerenter', () => warmOnHover(tile), { once: true });
   });
 
   if (!state.editing) {

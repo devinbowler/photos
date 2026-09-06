@@ -40,7 +40,13 @@ to maximum, which is a re-encode but not a visible one; `f_auto` stays in the
 chain because a browser cannot display a HEIC file without it. The untouched
 file is still at the `original` URL on every photo.
 
-Opening a photo does not wait on a download. Every photo in the current view
+Opening a photo does not wait on a download. Every photo in a view has its
+1400px stand-in fetched up front, four at a time, which is a few hundred KB
+each and means any photo on the page opens the moment it is clicked. The full
+file follows and replaces it in place. Hovering a tile also starts fetching
+its full size, so on a desktop a photo has usually skipped the stand-in stage
+entirely by the time it is opened. On a connection reporting itself as slow or
+metered, warming drops to the first twelve photos instead. Every photo in the current view
 has a mid-size preview fetched quietly in the background, so the lightbox
 always has something correct to paint immediately, and the full size for the
 photos either side is fetched ahead of the arrow keys. Selected photos can
