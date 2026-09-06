@@ -22,6 +22,7 @@ const el = {
   sessionPill: document.getElementById('sessionPill'),
   lightbox: document.getElementById('lightbox'),
   lbImage: document.getElementById('lbImage'),
+  lbCaptionCard: document.getElementById('lbCaptionCard'),
   lbCaption: document.getElementById('lbCaption'),
   lbMeta: document.getElementById('lbMeta'),
   lbOwnerTools: document.getElementById('lbOwnerTools'),
@@ -639,8 +640,12 @@ function openLightbox(index) {
 
   showPhoto(photo);
   el.lbImage.alt = photo.caption || 'Photo';
-  el.lbCaption.textContent = photo.caption || '';
-  el.lbMeta.textContent = formatDate(photo.takenAt || photo.uploadedAt);
+  const caption = photo.caption || '';
+  const meta = formatDate(photo.takenAt || photo.uploadedAt);
+  el.lbCaption.textContent = caption;
+  el.lbMeta.textContent = meta;
+  // An empty card is just a floating grey box over the photo
+  el.lbCaptionCard.hidden = !caption && !meta;
 
   const owner = isOwner();
   el.lbOwnerTools.hidden = !owner;
@@ -741,6 +746,7 @@ el.lbSaveCaption.addEventListener('click', async () => {
     await api(`/api/photos/${photo.id}`, { method: 'PATCH', json: { caption } });
     photo.caption = caption;
     el.lbCaption.textContent = caption;
+    el.lbCaptionCard.hidden = !caption && !el.lbMeta.textContent;
     toast('Caption saved');
     paintGrid();
   } catch (err) {
