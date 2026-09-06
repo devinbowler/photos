@@ -292,7 +292,7 @@ function openUploadModal(presetAlbum) {
       <input type="checkbox" id="showInGallery">
       Also show these in the public gallery
     </label>
-    <p class="field-hint">Off by default. You can turn it on for a single photo later from its full-size view.</p>
+    <p class="field-hint">Off by default. A photo can be in a private album and still appear here, and you can change this per photo later.</p>
 
     <div class="progress" id="progressBar" hidden><span></span></div>
 
@@ -454,6 +454,13 @@ function openAlbumModal(existing) {
         <input type="password" id="albumPassword" placeholder="${isEdit ? 'Leave blank to keep the current one' : 'Password for this album'}">
         <p class="field-hint">Separate from your upload password. Share this one with whoever should see it.</p>
       </div>
+      <div id="hidePhotosField" hidden>
+        <label class="checkline">
+          <input type="checkbox" id="hidePhotos" checked>
+          Also take these photos out of the public gallery
+        </label>
+        <p class="field-hint">The password hides the album. Photos individually marked public stay in the gallery unless you untick this.</p>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-sm btn-ghost" type="button" data-close="1">Cancel</button>
         <button class="btn btn-sm btn-primary" type="submit" id="albumSubmit">${isEdit ? 'Save' : 'Create album'}</button>
@@ -463,7 +470,12 @@ function openAlbumModal(existing) {
 
   const visibility = document.getElementById('albumVisibility');
   const passwordField = document.getElementById('passwordField');
-  const syncPasswordField = () => { passwordField.hidden = visibility.value !== 'private'; };
+  const hidePhotosField = document.getElementById('hidePhotosField');
+  const syncPasswordField = () => {
+    passwordField.hidden = visibility.value !== 'private';
+    // Only meaningful when an album that already has photos becomes private
+    hidePhotosField.hidden = !(isEdit && visibility.value === 'private' && existing.visibility !== 'private');
+  };
   visibility.addEventListener('change', syncPasswordField);
   syncPasswordField();
 
@@ -482,6 +494,8 @@ function openAlbumModal(existing) {
     try {
       const payload = { name, visibility: vis };
       if (password) payload.password = password;
+      const hide = document.getElementById('hidePhotos');
+      if (hide && !hidePhotosField.hidden) payload.hidePhotos = hide.checked;
       if (isEdit) await api(`/api/albums/${existing.slug}`, { method: 'PATCH', json: payload });
       else await api('/api/albums', { method: 'POST', json: payload });
       closeModal();
@@ -726,7 +740,7 @@ el.lbInGallery.addEventListener('change', async () => {
   try {
     await api(`/api/photos/${photo.id}`, { method: 'PATCH', json: { showInGallery: wanted } });
     photo.showInGallery = wanted;
-    toast(wanted ? 'Showing in the gallery' : 'Removed from the gallery, still in its album');
+    toast(wanted ? 'Now in the public gallery' : 'Removed from the public gallery');
     refreshTileFlag(state.lightboxIndex);
   } catch (err) {
     el.lbInGallery.checked = !wanted; // put it back, the server said no
@@ -893,10 +907,7 @@ async function setSelectedVisibility(makePublic) {
       json: { action: makePublic ? 'public' : 'private', ids }
     });
     const word = makePublic ? 'public' : 'private';
-    const skipped = data.blocked
-      ? `, ${data.blocked} skipped (in a private album)`
-      : '';
-    toast(`${data.count} photo${data.count === 1 ? '' : 's'} made ${word}${skipped}`);
+    toast(`${data.count} photo${data.count === 1 ? '' : 's'} made ${word}`);
     clearSelection();
     render();
   } catch (err) {

@@ -39,8 +39,14 @@ an album, since everything in the gallery is public by definition.
 
 Albums are public or private. A private album has its own separate password,
 shared with whoever should see it, and unlocking one gives a signed token good
-for 12 hours. Photos in a private album are never included in the public gallery
-feed, even if they were marked for it before the album was made private.
+for 12 hours.
+
+Whether a photo appears in the public gallery is the photo's own setting and
+nothing overrides it. A photo can sit in a private album and still be published
+to the gallery, in which case it appears in both places: the album stays behind
+its password, and that one photo is public. Making an album private offers to
+take its photos out of the gallery, ticked by default, but that is a choice
+rather than something that happens silently.
 
 ## Backend environment variables
 

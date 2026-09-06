@@ -321,12 +321,10 @@ app.post('/api/auth/logout', async (req, res) => {
 
 app.get('/api/gallery', detectOwner, async (req, res) => {
   try {
-    const privateAlbums = await Album.find({ visibility: 'private' }).select('slug');
-    const blocked = privateAlbums.map(a => a.slug);
-    const photos = await Photo.find({
-      showInGallery: true,
-      album: { $nin: blocked }
-    });
+    // showInGallery is the photo's own property. A photo can sit in a private
+    // album and still be published here; the album password gates the album,
+    // not the individual photo.
+    const photos = await Photo.find({ showInGallery: true });
     photos.sort((a, b) => sortKey(b) - sortKey(a));
     res.json({ photos: photos.map(serializePhoto) });
   } catch (err) {
@@ -414,8 +412,11 @@ app.patch('/api/albums/:slug', requireOwner, async (req, res) => {
         return res.status(400).json({ error: 'Private albums need a password' });
       }
       album.visibility = 'private';
-      // Private album photos should not leak into the public gallery
-      await Photo.updateMany({ album: album.slug }, { showInGallery: false });
+      // Photos keep their own public flag unless asked to drop it. Defaults to
+      // dropping it, so making an album private does the safe thing by default.
+      if (req.body.hidePhotos !== false) {
+        await Photo.updateMany({ album: album.slug }, { showInGallery: false });
+      }
     }
     if (password) {
       const { hash, salt } = hashPassword(password);
@@ -512,10 +513,8 @@ app.post('/api/photos', requireOwner, upload.array('files', 8), async (req, res)
     }
 
     const folder = albumSlug ? `photos/${albumSlug}` : 'photos/gallery';
-    // Off unless explicitly requested, and never on for a private album
-    const showInGallery = album && album.visibility === 'private'
-      ? false
-      : req.body.showInGallery === 'true';
+    // Off unless explicitly requested, whatever kind of album this is
+    const showInGallery = req.body.showInGallery === 'true';
 
     const saved = [];
     let position = await nextPositionIn(albumSlug);
@@ -593,19 +592,8 @@ app.post('/api/photos/bulk', requireOwner, async (req, res) => {
 
     if (action === 'public' || action === 'private') {
       const makePublic = action === 'public';
-      let changed = 0;
-      let blocked = 0;
-      for (const photo of photos) {
-        // A private album's photos can never be pushed into the public gallery
-        if (makePublic && photo.album) {
-          const alb = await Album.findOne({ slug: photo.album });
-          if (alb && alb.visibility === 'private') { blocked++; continue; }
-        }
-        photo.showInGallery = makePublic;
-        await photo.save();
-        changed++;
-      }
-      return res.json({ ok: true, action, count: changed, blocked });
+      await Photo.updateMany({ _id: { $in: photos.map(p => p._id) } }, { showInGallery: makePublic });
+      return res.json({ ok: true, action, count: photos.length, blocked: 0 });
     }
 
     if (action === 'move') {
@@ -620,8 +608,6 @@ app.post('/api/photos/bulk', requireOwner, async (req, res) => {
       for (const photo of photos) {
         photo.album = target;
         photo.position = position === null ? null : position++;
-        // A private album must never contain a photo flagged for the public gallery
-        if (targetAlbum && targetAlbum.visibility === 'private') photo.showInGallery = false;
         await photo.save();
       }
       return res.json({ ok: true, action, count: photos.length, album: target });
@@ -640,15 +626,7 @@ app.patch('/api/photos/:id', requireOwner, async (req, res) => {
     if (!photo) return res.status(404).json({ error: 'Photo not found' });
 
     if (typeof req.body.caption === 'string') photo.caption = req.body.caption.slice(0, 500);
-    if (typeof req.body.showInGallery === 'boolean') {
-      if (req.body.showInGallery && photo.album) {
-        const current = await Album.findOne({ slug: photo.album });
-        if (current && current.visibility === 'private') {
-          return res.status(400).json({ error: 'Photos in a private album cannot be shown in the public gallery' });
-        }
-      }
-      photo.showInGallery = req.body.showInGallery;
-    }
+    if (typeof req.body.showInGallery === 'boolean') photo.showInGallery = req.body.showInGallery;
     if ('album' in req.body) {
       const target = req.body.album || null;
       if (target) {
